@@ -1,5 +1,6 @@
 from typing import Any, Optional
 
+import prompty
 from azure.search.documents.aio import SearchClient
 from azure.search.documents.models import VectorQuery
 from openai import AsyncOpenAI
@@ -16,26 +17,6 @@ class RetrieveThenReadApproach(Approach):
     top documents from search, then constructs a prompt with them, and then uses OpenAI to generate an completion
     (answer) with that prompt.
     """
-
-    system_chat_template = (
-        "You are an intelligent assistant helping Contoso Inc employees with their healthcare plan questions and employee handbook questions. "
-        + "Use 'you' to refer to the individual asking the questions even if they ask with 'I'. "
-        + "Answer the following question using only the data provided in the sources below. "
-        + "Each source has a name followed by colon and the actual information, always include the source name for each fact you use in the response. "
-        + "If you cannot answer using the sources below, say you don't know. Use below example to answer"
-    )
-
-    # shots/sample conversation
-    question = """
-'What is the deductible for the employee plan for a visit to Overlake in Bellevue?'
-
-Sources:
-info1.txt: deductibles depend on whether you are in-network or out-of-network. In-network deductibles are $500 for employee and $1000 for family. Out-of-network deductibles are $1000 for employee and $2000 for family.
-info2.pdf: Overlake is in-network for the employee plan.
-info3.pdf: Overlake is the name of the area that includes a park and ride near Bellevue.
-info4.pdf: In-network institutions include Overlake, Swedish and others in the region
-"""
-    answer = "In-network deductibles are $500 for employee and $1000 for family [info1.txt] and Overlake is in-network for the employee plan [info2.pdf][info4.pdf]."
 
     def __init__(
         self,
@@ -67,6 +48,7 @@ info4.pdf: In-network institutions include Overlake, Swedish and others in the r
         self.query_language = query_language
         self.query_speller = query_speller
         self.chatgpt_token_limit = get_token_limit(chatgpt_model, self.ALLOW_NON_GPT_MODELS)
+        self.answer_prompt = self.load_prompty("ask/answer_question.prompty")
 
     async def run(
         self,
@@ -112,14 +94,15 @@ info4.pdf: In-network institutions include Overlake, Swedish and others in the r
 
         # Append user message
         content = "\n".join(sources_content)
-        user_content = q + "\n" + f"Sources:\n {content}"
+
+        messages = prompty.prepare(self.answer_prompt, {"user_query": q, "content": content})
 
         response_token_limit = 1024
         updated_messages = build_messages(
             model=self.chatgpt_model,
-            system_prompt=overrides.get("prompt_template", self.system_chat_template),
-            few_shots=[{"role": "user", "content": self.question}, {"role": "assistant", "content": self.answer}],
-            new_user_content=user_content,
+            system_prompt=overrides.get("prompt_template", messages[0]["content"]),
+            few_shots=messages[1:-1],
+            new_user_content=messages[-1]["content"],
             max_tokens=self.chatgpt_token_limit - response_token_limit,
             fallback_to_default=self.ALLOW_NON_GPT_MODELS,
         )

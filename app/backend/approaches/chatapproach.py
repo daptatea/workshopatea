@@ -3,59 +3,39 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any, AsyncGenerator, Optional
 
+import prompty
 from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
 from approaches.approach import Approach
 
 
 class ChatApproach(Approach, ABC):
-    query_prompt_few_shots: list[ChatCompletionMessageParam] = [
-        {"role": "user", "content": "How did crypto do last year?"},
-        {"role": "assistant", "content": "Summarize Cryptocurrency Market Dynamics from last year"},
-        {"role": "user", "content": "What are my health plans?"},
-        {"role": "assistant", "content": "Show available health plans"},
-    ]
+
     NO_RESPONSE = "0"
-
-    follow_up_questions_prompt_content = """Generate 3 very brief follow-up questions that the user would likely ask next.
-    Enclose the follow-up questions in double angle brackets. Example:
-    <<Are there exclusions for prescriptions?>>
-    <<Which pharmacies can be ordered from?>>
-    <<What is the limit for over-the-counter medication?>>
-    Do no repeat questions that have already been asked.
-    Make sure the last question ends with ">>".
-    """
-
-    query_prompt_template = """Below is a history of the conversation so far, and a new question asked by the user that needs to be answered by searching in a knowledge base.
-    You have access to Azure AI Search index with 100's of documents.
-    Generate a search query based on the conversation and the new question.
-    Do not include cited source filenames and document names e.g info.txt or doc.pdf in the search query terms.
-    Do not include any text inside [] or <<>> in the search query terms.
-    Do not include any special characters like '+'.
-    If the question is not in English, translate the question to English before generating the search query.
-    If you cannot generate a search query, return just the number 0.
-    """
-
-    @property
-    @abstractmethod
-    def system_message_chat_conversation(self) -> str:
-        pass
 
     @abstractmethod
     async def run_until_final_call(self, messages, overrides, auth_claims, should_stream) -> tuple:
         pass
 
-    def get_system_prompt(self, override_prompt: Optional[str], follow_up_questions_prompt: str) -> str:
-        if override_prompt is None:
-            return self.system_message_chat_conversation.format(
-                injected_prompt="", follow_up_questions_prompt=follow_up_questions_prompt
-            )
-        elif override_prompt.startswith(">>>"):
-            return self.system_message_chat_conversation.format(
-                injected_prompt=override_prompt[3:] + "\n", follow_up_questions_prompt=follow_up_questions_prompt
+    def get_messages(
+        self, override_prompt: Optional[str], include_follow_up_questions: bool, user_query: str, content: str
+    ) -> list[ChatCompletionMessageParam]:
+        if override_prompt is None or override_prompt.startswith(">>>"):
+            injected_prompt = "" if override_prompt is None else override_prompt[3:]
+            return prompty.prepare(
+                self.answer_prompt,
+                {
+                    "include_follow_up_questions": include_follow_up_questions,
+                    "injected_prompt": injected_prompt,
+                    "user_query": user_query,
+                    "content": content,
+                },
             )
         else:
-            return override_prompt.format(follow_up_questions_prompt=follow_up_questions_prompt)
+            # TODO: Warn if follow-up is specified, follow-up won't be injected
+            return prompty.prepare(
+                self.answer_prompt, {"override_prompt": override_prompt, "user_query": user_query, "content": content}
+            )
 
     def get_search_query(self, chat_completion: ChatCompletion, user_query: str):
         response_message = chat_completion.choices[0].message
@@ -163,4 +143,4 @@ class ChatApproach(Approach, ABC):
     ) -> AsyncGenerator[dict[str, Any], None]:
         overrides = context.get("overrides", {})
         auth_claims = context.get("auth_claims", {})
-        return self.run_with_streaming(messages, overrides, auth_claims, session_state)
+        return self.run_with_streaming(messages, overrides, auth_claims, session_state)  #
